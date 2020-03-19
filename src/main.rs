@@ -1,3 +1,5 @@
+extern crate serde;
+//extern crate toml;
 extern crate glob;
 
 use glob::glob_with;
@@ -7,6 +9,16 @@ use std::env;
 use std::iter::Iterator;
 use std::path::PathBuf;
 use std::result::Result;
+use toml;
+use serde::Deserialize;
+use std::option::Option;
+use std::fs;
+
+#[derive(Deserialize)]
+struct Cyg {
+    base: String,
+    exe: Option<String>,
+}
 
 const GLOB_CHARS: [char; 3] = ['?', '*', '['];
 
@@ -57,6 +69,11 @@ where
 }
 
 fn main() {
+    let contents = fs::read_to_string("Cygwin.toml")
+        .expect("Something went wrong reading the file");
+    let options: Cyg = toml::from_str(&contents).unwrap();
+    println!("base = {}, exe = {:?}", options.base, options.exe);
+    // let package_info: Value = toml::from_str(toml_content)?;
     match gen(env::args().skip(1)) {
         Ok(p) => println!("{:?}", p),
         Err(_) => eprintln!("Error!"),
