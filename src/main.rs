@@ -1,25 +1,15 @@
-extern crate serde;
-//extern crate toml;
 extern crate glob;
+extern crate toml;
+
+use std::env;
+use std::process::Command;
+use std::ffi::OsStr;
+use std::path::PathBuf;
 
 use glob::glob_with;
-use glob::GlobError;
 use glob::MatchOptions;
-use std::env;
-use std::iter::Iterator;
-use std::path::PathBuf;
-use std::result::Result;
-use toml;
-use serde::Deserialize;
-use std::option::Option;
-use std::fs;
-use std::ffi::OsStr;
 
-#[derive(Deserialize)]
-struct Cyg {
-    base: String,
-    exe: Option<String>,
-}
+use toml::Value;
 
 const GLOB_CHARS: [char; 3] = ['?', '*', '['];
 
@@ -27,14 +17,32 @@ fn is_literal(s: &str) -> bool {
     !s.chars().any(|c| GLOB_CHARS.contains(&c))
 }
 
-// Silently treat invalid patterns as literal.
-// If we hit an error while matching, return it.
-fn gen<I>(args: I) -> Result<Vec<PathBuf>, GlobError>
+fn run<E, S, I>(exe: E, args: I) -> ()
 where
-    I: IntoIterator,
-    I::Item: AsRef<str>,
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+    E: AsRef<OsStr>,
+    E: std::fmt::Debug,
 {
-    let mut paths : Vec<PathBuf> = Vec::new();
+    let result = Command::new(&exe)
+        .args(args)
+        .env("CYGWIN", "noglob")
+        .status();
+
+    match result {
+        Ok(status) =>
+            std::process::exit(status.code().unwrap_or(1)),
+        Err(e) => {
+            // If exe is a path, we can use exe.display()...
+            // I know it *is* a path, just need to get the types right.
+            eprintln!("Could not execute command {:?}: {}", exe, e);
+            std::process::exit(1);
+        }
+    }
+}
+
+fn expand(args: &mut std::env::ArgsOs) -> Vec::<std::ffi::OsString> {
+    let mut result = Vec::<std::ffi::OsString>::new();
     let options = MatchOptions {
         case_sensitive: false,
         require_literal_separator: true,
@@ -42,61 +50,57 @@ where
     };
 
     for arg in args {
-        // Glob needs a &str value.
-        let arg = arg.as_ref();
-        if is_literal(arg) {
-            paths.push(arg.into());
-        } else {
-            match glob_with(arg, options) {
-                Ok(mut path_iter) => {
-                    // If we match no items, return the pattern...
-                    match path_iter.next() {
-                        None => paths.push(arg.into()),
-                        Some(p) => {
-                            paths.push(p?);
-                            for p in path_iter {
-                                paths.push(p?);
+        if let Some(arg_str) = arg.to_str() {
+            if is_literal(arg_str) {
+                result.push(arg);
+            } else {
+                match glob_with(arg_str, options) {
+                    Err(_) => result.push(arg),
+                    Ok(mut path_iter) => {
+                        match path_iter.next() {
+                            None => result.push(arg),
+                            Some(p) => {
+                                result.push(p.unwrap().into());
+                                for p in path_iter {
+                                    result.push(p.unwrap().into());
+                                }
                             }
                         }
                     }
                 }
-                Err(_) => {
-                    paths.push(arg.into());
-                }
             }
+        } else {
+            result.push(arg);
         }
     }
-    Ok(paths)
+    result
+}
+
+fn command(args: &mut std::env::ArgsOs) -> std::ffi::OsString {
+    let me = env::current_exe() /* Result<PathBuf> */
+        .unwrap();
+    let cmd = match me.file_stem() {
+        None => args.next().unwrap(),
+        Some(name) => if name == "cyg" { args.next().unwrap() } else { name.to_os_string() }
+    };
+    cmd
+}
+
+fn cygwin_base() -> PathBuf {
+    let contents = std::fs::read_to_string("Cygwin.toml")
+        .expect("Something went wrong reading the file");
+    let val = contents.parse::<Value>().unwrap();
+    // TODO: Default to the "Cygwin64" directory alongside this exe
+    PathBuf::from(val["base"].as_str().unwrap_or("E:\\Utils\\Cygwin64"))
 }
 
 fn main() {
-    let contents = fs::read_to_string("Cygwin.toml")
-        .expect("Something went wrong reading the file");
-    let options: Cyg = toml::from_str(&contents).unwrap();
-    let exe_op = PathBuf::from(options.exe.unwrap());
-    let me = env::current_exe().unwrap();
-    let exe_name = me.file_stem().unwrap();
-    let mut args = env::args().skip(1);
-    let command = if exe_name == "cyg" || exe_name == exe_op {
-        OsStr::from(args.next().unwrap()).as_ref()
-    } else {
-        exe_name
-    };
-    // Can't do this all in one line - message about temporary value getting dropped...
-    let me = me.file_name().unwrap();
-    println!("me = {:?}, base = {}, exe = {:?}", me, options.base, options.exe);
-    let mut path = PathBuf::from(options.base);
-    path.push("bin");
-    path.push(exe_name);
-    path.set_extension(".exe");
-    if path.exists() {
-        println!("Found {:?}!", path);
-    } else {
-        println!("Not Found {:?}!", path);
-    }
-    // let package_info: Value = toml::from_str(toml_content)?;
-    match gen(args) {
-        Ok(p) => println!("{:?}", p),
-        Err(_) => eprintln!("Error!"),
-    }
+    let mut args = env::args_os();
+    args.next(); // Skip the program name
+    let mut exe = cygwin_base();
+    exe.push("bin");
+    exe.push(command(&mut args));
+    exe.set_extension("exe");
+    let args = expand(&mut args);
+    run(exe, args);
 }
