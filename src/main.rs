@@ -87,7 +87,11 @@ fn command(args: &mut std::env::ArgsOs) -> std::ffi::OsString {
 }
 
 fn cygwin_base() -> PathBuf {
-    let contents = std::fs::read_to_string("Cygwin.toml")
+    // Config file is next to the executable
+    let mut config = env::current_exe() /* Result<PathBuf> */
+        .unwrap();
+    config.set_file_name("Cygwin.toml");
+    let contents = std::fs::read_to_string(config)
         .expect("Something went wrong reading the file");
     let val = contents.parse::<Value>().unwrap();
     // TODO: Default to the "Cygwin64" directory alongside this exe
